@@ -212,46 +212,44 @@ def generate_market_analysis(all_results, current_prices):
             }
         }
 
+import os
+import json
+import logging
+from reporting.chart_generator import convert_keys  # make sure this import is present
+
+logger = logging.getLogger(__name__)
 
 def save_results(all_results, backtests, pdf_report, output_dir):
     """
-    Save all results to files.
-    
-    Parameters:
-    all_results (dict): Analysis results
-    backtests (dict): Backtest results
-    pdf_report: PDF report object
-    output_dir (str): Output directory
+    Save JSON, backtest JSON, and PDF report — letting FPDF write the PDF bytes directly.
     """
-    # Save JSON results
+    # 1. JSON results
     json_fname = os.path.join(output_dir, "Enhanced_Covered_Call_Analysis.json")
     with open(json_fname, "w") as f:
         json.dump(convert_keys(all_results), f, indent=4)
     logger.info(f"Saved results to {json_fname}")
-    
-    # Save backtest results
+
+    # 2. Backtest JSON
     backtest_fname = os.path.join(output_dir, "Backtest_Results.json")
     with open(backtest_fname, "w") as f:
         json.dump(convert_keys(backtests), f, indent=4)
     logger.info(f"Saved backtest results to {backtest_fname}")
-    
-    # Save PDF report
+
+    # 3. PDF report
     if pdf_report:
+        pdf_fname = os.path.join(output_dir, "Enhanced_Covered_Call_Analysis.pdf")
         try:
-            pdf_fname = os.path.join(output_dir, "Enhanced_Covered_Call_Analysis.pdf")
-            pdf_report.output(pdf_fname, 'F')
+            # **This** is the key: write straight to file, no intermediate string.
+            pdf_report.output(name=pdf_fname, dest='F')
             logger.info(f"Saved PDF report to {pdf_fname}")
         except Exception as e:
             logger.error(f"Error saving PDF report: {e}")
-            # Try with a different encoding or using binary mode
-            try:
-                pdf_fname = os.path.join(output_dir, "Enhanced_Covered_Call_Analysis.pdf")
-                pdf_data = pdf_report.output(dest='S').encode('latin-1', errors='replace')
-                with open(pdf_fname, 'wb') as f:
-                    f.write(pdf_data)
-                logger.info(f"Saved PDF report to {pdf_fname} (using alternative method)")
-            except Exception as e2:
-                logger.error(f"Failed to save PDF report with alternative method: {e2}")
+
+
+
+
+
+
 
 
 def main():
