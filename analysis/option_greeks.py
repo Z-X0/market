@@ -208,6 +208,139 @@ class OptionGreeksManager:
                 continue
                 
             current_price = self.underlying_prices[symbol]
+            moves = price_moves[symbol]
+            
+            profile = {}
+            for move in moves:
+                new_price = current_price * (1 + move)
+                price_level = round(new_price, 2)
+                
+                # Calculate gamma at this price level
+                total_gamma = 0
+                total_delta = 0
+                
+                for option_id, option in self.option_positions.items():
+                    if option['symbol'] != symbol or 'greeks' not in option:
+                        continue
+                        
+                    quantity = option['quantity']
+                    if option.get('position_type', 'long') == 'short':
+                        quantity = -quantity
+                    
+                    # Use BSM to calculate greeks at new price level
+                    if all(k in option for k in ['strike', 'days_to_expiry', 'implied_vol']):
+                        strike = option['strike']
+                        t = option['days_to_expiry'] / 365
+                        sigma = option['implied_vol']
+                        
+                        if t > 0 and sigma > 0:
+                            option_type = option.get('option_type', 'call')
+                            
+                            # Calculate d1, d2
+                            d1 = (math.log(new_price/strike) + (RISK_FREE_RATE + 0.5 * sigma**2) * t) / (sigma * math.sqrt(t))
+                            d2 = d1 - sigma * math.sqrt(t)
+                            
+                            # Calculate gamma
+                            gamma = norm.pdf(d1) / (new_price * sigma * math.sqrt(t))
+                            
+                            # Calculate delta
+                            if option_type == 'call':
+                                delta = norm.cdf(d1)
+                            else:  # put
+                                delta = norm.cdf(d1) - 1
+                            
+                            total_gamma += gamma * quantity
+                            total_delta += delta * quantity
+                
+                # Store results
+                profile[price_level] = {
+                    'price_move': move,
+                    'price': price_level,
+                    'gamma': total_gamma,
+                    'delta': total_delta,
+                    # Gamma P&L = 0.5 * Gamma * (ΔS)^2
+                    'gamma_pnl': 0.5 * total_gamma * (price_level - current_price)**2
+                }
+            
+            gamma_profile[symbol] = {
+                'current_price': current_price,
+                'profile': profile
+            }
+        
+        return gamma_profile
+    
+    def calculate_theta_decay_projection(
+        self, 
+        days_forward: List[int] = [1, 7, 30]
+    ) -> Dict[str, float]:
+        """
+        Project theta decay over specified days.
+        
+        Parameters:
+        days_forward (list): List of days to project
+        
+        Returns:
+        dict: Projected theta decay
+        """
+        theta_decay = {}
+        
+        for day in days_forward:
+            daily_theta = 0
+            
+            for option_id, option in self.option_positions.items():
+                if 'greeks' not in option or 'theta' not in option['greeks']:
+                    continue
+                    
+                quantity = option['quantity']
+                if option.get('position_type', 'long') == 'short':
+                    quantity = -quantity
+                    
+                daily_theta += option['greeks']['theta'] * quantity
+            
+            theta_decay[f'day_{day}'] = daily_theta * day
+        
+        return theta_decay
+    
+    def calculate_vega_exposure_by_expiry(self) -> Dict[str, float]:
+        """
+        Calculate vega exposure by expiry.
+        
+        Returns:
+        dict: Vega exposure by expiry
+        """
+        vega_exposure = {}
+        
+        exposures = self.get_greek_exposures_by_expiry()
+        
+        for expiry, greeks in exposures.items():
+            vega_exposure[expiry] = greeks.get('vega', 0)
+        
+        return vega_exposure
+    
+    def calculate_volatility_impact(
+        self, 
+        vol_changes: Optional[Dict[str, List[float]]] = None
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Calculate impact of volatility changes on portfolio.
+        
+        Parameters:
+        vol_changes (dict): Volatility changes by symbol
+        
+        Returns:
+        dict: Volatility impact analysis
+        """
+        if vol_changes is None:
+            # Default: evaluate range of vol changes
+            vol_changes = {symbol: [-0.05, -0.02, -0.01, 0.01, 0.02, 0.05] for symbol in self.underlying_prices}
+        
+        vol_impact = {}
+        
+        for symbol in self.underlying_prices:
+            if symbol not in vol_changes:
+                continue
+                
+            current_price = self.underlying_prices[symbol]
             
             # Calculate total vega for this symbol
             total_vega = 0
@@ -446,137 +579,3 @@ def calculate_option_greeks(
         'vega': vega,
         'rho': rho
     }
- self.underlying_prices[symbol]
-            moves = price_moves[symbol]
-            
-            profile = {}
-            for move in moves:
-                new_price = current_price * (1 + move)
-                price_level = round(new_price, 2)
-                
-                # Calculate gamma at this price level
-                total_gamma = 0
-                total_delta = 0
-                
-                for option_id, option in self.option_positions.items():
-                    if option['symbol'] != symbol or 'greeks' not in option:
-                        continue
-                        
-                    quantity = option['quantity']
-                    if option.get('position_type', 'long') == 'short':
-                        quantity = -quantity
-                    
-                    # Use BSM to calculate greeks at new price level
-                    if all(k in option for k in ['strike', 'days_to_expiry', 'implied_vol']):
-                        strike = option['strike']
-                        t = option['days_to_expiry'] / 365
-                        sigma = option['implied_vol']
-                        
-                        if t > 0 and sigma > 0:
-                            option_type = option.get('option_type', 'call')
-                            
-                            # Calculate d1, d2
-                            d1 = (math.log(new_price/strike) + (RISK_FREE_RATE + 0.5 * sigma**2) * t) / (sigma * math.sqrt(t))
-                            d2 = d1 - sigma * math.sqrt(t)
-                            
-                            # Calculate gamma
-                            gamma = norm.pdf(d1) / (new_price * sigma * math.sqrt(t))
-                            
-                            # Calculate delta
-                            if option_type == 'call':
-                                delta = norm.cdf(d1)
-                            else:  # put
-                                delta = norm.cdf(d1) - 1
-                            
-                            total_gamma += gamma * quantity
-                            total_delta += delta * quantity
-                
-                # Store results
-                profile[price_level] = {
-                    'price_move': move,
-                    'price': price_level,
-                    'gamma': total_gamma,
-                    'delta': total_delta,
-                    # Gamma P&L = 0.5 * Gamma * (ΔS)^2
-                    'gamma_pnl': 0.5 * total_gamma * (price_level - current_price)**2
-                }
-            
-            gamma_profile[symbol] = {
-                'current_price': current_price,
-                'profile': profile
-            }
-        
-        return gamma_profile
-    
-    def calculate_theta_decay_projection(
-        self, 
-        days_forward: List[int] = [1, 7, 30]
-    ) -> Dict[str, float]:
-        """
-        Project theta decay over specified days.
-        
-        Parameters:
-        days_forward (list): List of days to project
-        
-        Returns:
-        dict: Projected theta decay
-        """
-        theta_decay = {}
-        
-        for day in days_forward:
-            daily_theta = 0
-            
-            for option_id, option in self.option_positions.items():
-                if 'greeks' not in option or 'theta' not in option['greeks']:
-                    continue
-                    
-                quantity = option['quantity']
-                if option.get('position_type', 'long') == 'short':
-                    quantity = -quantity
-                    
-                daily_theta += option['greeks']['theta'] * quantity
-            
-            theta_decay[f'day_{day}'] = daily_theta * day
-        
-        return theta_decay
-    
-    def calculate_vega_exposure_by_expiry(self) -> Dict[str, float]:
-        """
-        Calculate vega exposure by expiry.
-        
-        Returns:
-        dict: Vega exposure by expiry
-        """
-        vega_exposure = {}
-        
-        exposures = self.get_greek_exposures_by_expiry()
-        
-        for expiry, greeks in exposures.items():
-            vega_exposure[expiry] = greeks.get('vega', 0)
-        
-        return vega_exposure
-    
-    def calculate_volatility_impact(
-        self, 
-        vol_changes: Optional[Dict[str, List[float]]] = None
-    ) -> Dict[str, Dict[str, Any]]:
-        """
-        Calculate impact of volatility changes on portfolio.
-        
-        Parameters:
-        vol_changes (dict): Volatility changes by symbol
-        
-        Returns:
-        dict: Volatility impact analysis
-        """
-        if vol_changes is None:
-            # Default: evaluate range of vol changes
-            vol_changes = {symbol: [-0.05, -0.02, -0.01, 0.01, 0.02, 0.05] for symbol in self.underlying_prices}
-        
-        vol_impact = {}
-        
-        for symbol in self.underlying_prices:
-            if symbol not in vol_changes:
-                continue
-                
-            current_price =

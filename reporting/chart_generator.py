@@ -1,4 +1,80 @@
-# Create market analyzer if not provided
+# reporting/chart_generator.py
+"""
+Chart Generator Module.
+
+This module provides functions for generating various charts and visualizations
+for options strategy analysis and reporting.
+"""
+
+import logging
+import math
+from datetime import datetime, date
+from typing import Dict, List, Tuple, Any, Optional, Union
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from matplotlib import cm
+from mpl_toolkits.mplot3d import Axes3D
+from scipy.interpolate import griddata
+
+logger = logging.getLogger(__name__)
+
+
+def convert_keys(obj: Any) -> Any:
+    """
+    Convert keys for JSON serialization.
+    
+    Parameters:
+    obj: Object to convert
+    
+    Returns:
+    Object with converted keys
+    """
+    if isinstance(obj, dict):
+        return {str(k): convert_keys(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_keys(i) for i in obj]
+    elif isinstance(obj, (np.integer, int)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, float)):
+        return float(obj)
+    elif isinstance(obj, (np.ndarray, pd.Series, pd.DataFrame)):
+        return obj.tolist() if hasattr(obj, 'tolist') else obj.to_dict()
+    elif isinstance(obj, datetime):
+        return obj.strftime('%Y-%m-%d')
+    elif isinstance(obj, (pd.Timestamp, np.datetime64)):
+        return pd.to_datetime(obj).strftime('%Y-%m-%d')
+    return obj
+
+
+def generate_regime_chart(
+    symbol: str, 
+    market_analyzer: Optional[Any] = None, 
+    weekly_data: Optional[pd.DataFrame] = None
+) -> plt.Figure:
+    """
+    Generate a visually appealing chart showing price and regime classification.
+    
+    Parameters:
+    symbol (str): Symbol to chart
+    market_analyzer (MarketRegimeAnalyzer, optional): Market regime analyzer
+    weekly_data (pandas.DataFrame, optional): Weekly price data
+    
+    Returns:
+    matplotlib.figure.Figure: Generated figure
+    """
+    try:
+        # Get data if not provided
+        if weekly_data is None or weekly_data.empty:
+            try:
+                from data.fetcher import get_stock_history_weekly
+                weekly_data = get_stock_history_weekly(symbol)
+            except ImportError:
+                logger.warning("Could not import fetcher module")
+                
+        # Create market analyzer if not provided
         if market_analyzer is None and weekly_data is not None and not weekly_data.empty:
             try:
                 from analysis.market_regime import MarketRegimeAnalyzer
@@ -98,14 +174,14 @@
                      transform=axs[1].transAxes, fontsize=10, fontweight='bold',
                      bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8))
         
-            plt.tight_layout()
-            return fig
+        plt.tight_layout()
+        return fig
     
-        except Exception as e:
-            logger.error(f"Error generating regime chart: {e}")
-            fig, ax = plt.subplots(figsize=(10, 6), facecolor='#F8F9FA')
-            ax.text(0.5, 0.5, f"Unable to generate regime chart: {e}", 
-                ha='center', va='center', fontsize=12)
+    except Exception as e:
+        logger.error(f"Error generating regime chart: {e}")
+        fig, ax = plt.subplots(figsize=(10, 6), facecolor='#F8F9FA')
+        ax.text(0.5, 0.5, f"Unable to generate regime chart: {e}", 
+               ha='center', va='center', fontsize=12)
         return fig
 
 
@@ -600,7 +676,7 @@ def generate_volatility_surface_chart(
     Returns:
     matplotlib.figure.Figure: Generated figure
     """
-    if not volatility_data or 'x' not in volatility_data or 'y' not in volatility_data or 'z' not in volatility_data:
+    if not volatility_data or 'surface_data' not in volatility_data:
         fig, ax = plt.subplots(figsize=(10, 6), facecolor='#F8F9FA')
         ax.text(0.5, 0.5, "No volatility surface data available", 
                ha='center', va='center', fontsize=12)
@@ -608,9 +684,22 @@ def generate_volatility_surface_chart(
     
     try:
         # Extract data
-        X = np.array(volatility_data['x'])
-        Y = np.array(volatility_data['y'])
-        Z = np.array(volatility_data['z'])
+        surface_data = volatility_data.get('surface_data', [])
+        if not surface_data:
+            raise ValueError("Empty surface data")
+            
+        df = pd.DataFrame(surface_data)
+        
+        # Create a grid for smooth surface
+        x = df['moneyness'].values
+        y = df['dte'].values
+        z = df['implied_vol'].values
+        
+        # Grid the data
+        xi = np.linspace(min(x), max(x), 100)
+        yi = np.linspace(min(y), max(y), 100)
+        xi, yi = np.meshgrid(xi, yi)
+        zi = griddata((x, y), z, (xi, yi), method='cubic')
         
         # Create 3D figure
         plt.style.use('seaborn-v0_8-whitegrid')
@@ -618,16 +707,16 @@ def generate_volatility_surface_chart(
         ax = fig.add_subplot(111, projection='3d')
         
         # Create surface plot
-        surf = ax.plot_surface(X, Y, Z, cmap=cm.viridis, linewidth=0, antialiased=True, alpha=0.8)
+        surf = ax.plot_surface(xi, yi, zi, cmap=cm.viridis, linewidth=0, antialiased=True, alpha=0.8)
         
         # Add color bar
         fig.colorbar(surf, ax=ax, shrink=0.5, aspect=5, label='Implied Volatility')
         
         # Enhance chart styling
         ax.set_title("Implied Volatility Surface", fontsize=16, fontweight='bold')
-        ax.set_xlabel(volatility_data.get('x_label', 'Days to Expiration'), fontsize=12)
-        ax.set_ylabel(volatility_data.get('y_label', 'Moneyness'), fontsize=12)
-        ax.set_zlabel(volatility_data.get('z_label', 'Implied Volatility'), fontsize=12)
+        ax.set_xlabel("Moneyness", fontsize=12)
+        ax.set_ylabel("Days to Expiration", fontsize=12)
+        ax.set_zlabel("Implied Volatility", fontsize=12)
         
         # Customize view angle
         ax.view_init(30, 35)
@@ -679,23 +768,29 @@ def generate_roll_strategy_chart(
     try:
         # Extract data
         strikes = [opt.get('strike', 0) for opt in roll_options]
-        if not strikes:
+        if not any(strikes):
             strikes = [opt.get('new_strike', 0) for opt in roll_options]
             
         dtes = [opt.get('dte', 0) for opt in roll_options]
-        if not dtes:
+        if not any(dtes):
             dtes = [current_days + opt.get('days_added', 0) for opt in roll_options]
             
         scores = [opt.get('score', 0) for opt in roll_options]
+        if not any(scores):
+            # Try other metrics as proxy for score
+            scores = [opt.get('safety_score', i/len(roll_options)) for i, opt in enumerate(roll_options)]
+            
         roll_credits = [opt.get('roll_credit', 0) for opt in roll_options]
+        if not any(roll_credits):
+            roll_credits = [opt.get('premium', 0) - opt.get('current_premium', 0) for opt in roll_options]
         
         # Create a scatter plot with color gradient by score
         plt.style.use('seaborn-v0_8-whitegrid')
         fig, ax = plt.subplots(figsize=(10, 6), facecolor='#F8F9FA')
         
-        # Create scatter plot
+        # Create scatter plot with size based on roll credit (make all positive for size)
         scatter = ax.scatter(dtes, strikes, c=scores, cmap='viridis', 
-                           s=abs(np.array(roll_credits)) * 500, alpha=0.7)
+                           s=np.array([abs(c) * 500 + 100 for c in roll_credits]), alpha=0.7)
         
         # Add color bar
         cbar = plt.colorbar(scatter)
@@ -710,14 +805,17 @@ def generate_roll_strategy_chart(
                  label=f'Current Price: ${current_price:.2f}')
         
         # Add labels for top options
-        top_indices = np.argsort(scores)[-3:]  # Top 3 scores
-        for idx in top_indices:
-            ax.annotate(f"Roll Credit: ${roll_credits[idx]:.2f}",
-                      xy=(dtes[idx], strikes[idx]),
-                      xytext=(10, 10),
-                      textcoords="offset points",
-                      fontsize=9,
-                      bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8))
+        if scores and any(scores):
+            top_indices = np.argsort(scores)[-3:]  # Top 3 scores
+            for idx in top_indices:
+                if idx < len(roll_credits) and idx < len(dtes) and idx < len(strikes):
+                    roll_credit = roll_credits[idx]
+                    ax.annotate(f"Roll Credit: ${roll_credit:.2f}",
+                              xy=(dtes[idx], strikes[idx]),
+                              xytext=(10, 10),
+                              textcoords="offset points",
+                              fontsize=9,
+                              bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8))
         
         # Enhance chart styling
         ax.set_title("Roll Strategy Options", fontsize=16, fontweight='bold')
@@ -743,80 +841,3 @@ def generate_roll_strategy_chart(
         ax.text(0.5, 0.5, f"Unable to generate roll strategy chart: {e}", 
                ha='center', va='center', fontsize=12)
         return fig
-# reporting/chart_generator.py
-"""
-Chart Generator Module.
-
-This module provides functions for generating various charts and visualizations
-for options strategy analysis and reporting.
-"""
-
-import logging
-import math
-from datetime import datetime, date
-from typing import Dict, List, Tuple, Any, Optional, Union
-
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-from matplotlib import cm
-from mpl_toolkits.mplot3d import Axes3D
-from scipy.interpolate import griddata
-
-logger = logging.getLogger(__name__)
-
-
-def convert_keys(obj: Any) -> Any:
-    """
-    Convert keys for JSON serialization.
-    
-    Parameters:
-    obj: Object to convert
-    
-    Returns:
-    Object with converted keys
-    """
-    if isinstance(obj, dict):
-        return {str(k): convert_keys(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [convert_keys(i) for i in obj]
-    elif isinstance(obj, (np.integer, int)):
-        return int(obj)
-    elif isinstance(obj, (np.floating, float)):
-        return float(obj)
-    elif isinstance(obj, (np.ndarray, pd.Series, pd.DataFrame)):
-        return obj.tolist() if hasattr(obj, 'tolist') else obj.to_dict()
-    elif isinstance(obj, datetime):
-        return obj.strftime('%Y-%m-%d')
-    elif isinstance(obj, (pd.Timestamp, np.datetime64)):
-        return pd.to_datetime(obj).strftime('%Y-%m-%d')
-    return obj
-
-
-def generate_regime_chart(
-    symbol: str, 
-    market_analyzer: Optional[Any] = None, 
-    weekly_data: Optional[pd.DataFrame] = None
-) -> plt.Figure:
-    """
-    Generate a visually appealing chart showing price and regime classification.
-    
-    Parameters:
-    symbol (str): Symbol to chart
-    market_analyzer (MarketRegimeAnalyzer, optional): Market regime analyzer
-    weekly_data (pandas.DataFrame, optional): Weekly price data
-    
-    Returns:
-    matplotlib.figure.Figure: Generated figure
-    """
-    try:
-        # Get data if not provided
-        if weekly_data is None or weekly_data.empty:
-            try:
-                from data.fetcher import get_stock_history_weekly
-                weekly_data = get_stock_history_weekly(symbol)
-            except ImportError:
-                logger.warning("Could not import fetcher module")
-                
-        # Create market analyzer if not provided
