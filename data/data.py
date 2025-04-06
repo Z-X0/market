@@ -15,6 +15,19 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+
+from data.fetcher import (
+    fetch_data_with_backoff,
+    get_stock_history_weekly,
+    get_stock_history_daily,
+    fetch_stock_data,
+    fetch_option_chains,
+    fetch_market_factors_data,
+    fetch_dividend_schedule
+)
+
+
+
 logger = logging.getLogger(__name__)
 
 # Default parameters

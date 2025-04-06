@@ -8,7 +8,7 @@ with visualizations, tables, and analysis of options strategies.
 
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Any, Optional, Union
 
 import numpy as np
@@ -37,6 +37,80 @@ except ImportError:
     logging.warning("FPDF not installed, PDF generation disabled")
 
 logger = logging.getLogger(__name__)
+
+# Helper functions
+def get_strategy_recommendation(regime: int) -> str:
+    """Get strategy recommendation based on market regime."""
+    regime_recommendations = {
+        0: "very conservative",  # Severe Bearish
+        1: "conservative",       # Bearish
+        2: "cautious",           # Weak Bearish
+        3: "balanced",           # Neutral
+        4: "moderately aggressive",  # Weak Bullish
+        5: "aggressive",         # Bullish
+        6: "very aggressive"     # Strong Bullish
+    }
+    
+    return regime_recommendations.get(regime, "balanced")
+
+
+def get_target_yield(risk_level: str) -> float:
+    """Get target annual premium yield based on risk level."""
+    yields = {
+        'conservative': 0.12,  # 12%
+        'moderate': 0.16,      # 16%
+        'aggressive': 0.20     # 20%
+    }
+    
+    return yields.get(risk_level, 0.12)
+
+
+def get_delta_range(risk_level: str) -> str:
+    """Get target delta range based on risk level."""
+    delta_ranges = {
+        'conservative': "0.15 - 0.25",
+        'moderate': "0.25 - 0.35",
+        'aggressive': "0.30 - 0.45"
+    }
+    
+    return delta_ranges.get(risk_level, "0.20 - 0.30")
+
+
+def get_dte_range(risk_level: str) -> str:
+    """Get target DTE range based on risk level."""
+    dte_ranges = {
+        'conservative': "30 - 45 days",
+        'moderate': "21 - 45 days",
+        'aggressive': "14 - 30 days"
+    }
+    
+    return dte_ranges.get(risk_level, "30 - 45 days")
+
+
+def get_allocation(regime: int, risk_level: str) -> float:
+    """Get portfolio allocation percentage based on regime and risk level."""
+    # Base allocation by risk level
+    base_allocation = {
+        'conservative': 0.5,
+        'moderate': 0.7,
+        'aggressive': 0.9
+    }.get(risk_level, 0.6)
+    
+    # Regime adjustment
+    regime_adjustment = {
+        0: -0.2,  # Severe Bearish
+        1: -0.1,  # Bearish
+        2: -0.05, # Weak Bearish
+        3: 0.0,   # Neutral
+        4: 0.05,  # Weak Bullish
+        5: 0.1,   # Bullish
+        6: 0.2    # Strong Bullish
+    }.get(regime, 0.0)
+    
+    # Calculate final allocation (constrained between 0.1 and 1.0)
+    allocation = max(0.1, min(1.0, base_allocation + regime_adjustment))
+    
+    return allocation
 
 
 class EnhancedQuantPDF(FPDF):
@@ -112,7 +186,7 @@ class EnhancedQuantPDF(FPDF):
         self.set_text_color(255, 255, 255)  # White
         
         for i, header in enumerate(headers):
-            self.cell(col_widths[i], 7, str(header), 1, 0, "C", True)
+            self.cell(col_widths[i], 7, self.sanitize_text(header), 1, 0, "C", True)
         self.ln()
         
         # Reset text color
@@ -142,7 +216,7 @@ class EnhancedQuantPDF(FPDF):
                 else:
                     cell_text = str(cell)
                 
-                self.cell(col_widths[i], 6, cell_text, 1, 0, align, True)
+                self.cell(col_widths[i], 6, self.sanitize_text(cell_text), 1, 0, align, True)
             
             self.ln()
             row_fill = not row_fill  # Alternate row colors
@@ -189,7 +263,8 @@ def generate_enhanced_pdf_report(
     
     # Date and portfolio summary
     pdf.set_font('Arial', '', 12)
-    pdf.cell(0, 10, f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M')}", 0, 1, 'C')
+    current_date = datetime.now().strftime('%Y-%m-%d %H:%M')
+    pdf.cell(0, 10, f"Generated on: {current_date}", 0, 1, 'C')
     
     num_symbols = len(portfolio)
     total_shares = sum(portfolio.values())
@@ -753,15 +828,13 @@ def generate_enhanced_pdf_report(
     pdf.create_section_header("Implementation Calendar", 2)
     
     # Create calendar table
-    from datetime import datetime, timedelta
-    
-    current_date = datetime.now()
     headers = ['Date', 'Symbol', 'Action', 'Details']
     data = []
     
     # Generate artificial implementation calendar
+    curr_date = datetime.now()
     for i, symbol in enumerate(portfolio):
-        execution_date = current_date + timedelta(days=i%3)  # Spread over 3 days
+        execution_date = curr_date + timedelta(days=i%3)  # Spread over 3 days
         date_str = execution_date.strftime('%Y-%m-%d')
         
         # Get position details if available
@@ -796,78 +869,3 @@ def generate_enhanced_pdf_report(
         pdf.create_data_table(headers, data)
     
     return pdf
-
-# Add these helper functions to the pdf_generator.py file
-
-def get_strategy_recommendation(regime: int) -> str:
-    """Get strategy recommendation based on market regime."""
-    regime_recommendations = {
-        0: "very conservative",  # Severe Bearish
-        1: "conservative",       # Bearish
-        2: "cautious",           # Weak Bearish
-        3: "balanced",           # Neutral
-        4: "moderately aggressive",  # Weak Bullish
-        5: "aggressive",         # Bullish
-        6: "very aggressive"     # Strong Bullish
-    }
-    
-    return regime_recommendations.get(regime, "balanced")
-
-
-def get_target_yield(risk_level: str) -> float:
-    """Get target annual premium yield based on risk level."""
-    yields = {
-        'conservative': 0.12,  # 12%
-        'moderate': 0.16,      # 16%
-        'aggressive': 0.20     # 20%
-    }
-    
-    return yields.get(risk_level, 0.12)
-
-
-def get_delta_range(risk_level: str) -> str:
-    """Get target delta range based on risk level."""
-    delta_ranges = {
-        'conservative': "0.15 - 0.25",
-        'moderate': "0.25 - 0.35",
-        'aggressive': "0.30 - 0.45"
-    }
-    
-    return delta_ranges.get(risk_level, "0.20 - 0.30")
-
-
-def get_dte_range(risk_level: str) -> str:
-    """Get target DTE range based on risk level."""
-    dte_ranges = {
-        'conservative': "30 - 45 days",
-        'moderate': "21 - 45 days",
-        'aggressive': "14 - 30 days"
-    }
-    
-    return dte_ranges.get(risk_level, "30 - 45 days")
-
-
-def get_allocation(regime: int, risk_level: str) -> float:
-    """Get portfolio allocation percentage based on regime and risk level."""
-    # Base allocation by risk level
-    base_allocation = {
-        'conservative': 0.5,
-        'moderate': 0.7,
-        'aggressive': 0.9
-    }.get(risk_level, 0.6)
-    
-    # Regime adjustment
-    regime_adjustment = {
-        0: -0.2,  # Severe Bearish
-        1: -0.1,  # Bearish
-        2: -0.05, # Weak Bearish
-        3: 0.0,   # Neutral
-        4: 0.05,  # Weak Bullish
-        5: 0.1,   # Bullish
-        6: 0.2    # Strong Bullish
-    }.get(regime, 0.0)
-    
-    # Calculate final allocation (constrained between 0.1 and 1.0)
-    allocation = max(0.1, min(1.0, base_allocation + regime_adjustment))
-    
-    return allocation

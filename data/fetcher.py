@@ -200,7 +200,7 @@ def fetch_option_chains(
                 # Fetch option chain
                 chain = ticker.option_chain(exp_str)
                 
-                if chain and hasattr(chain, 'calls'):
+                if hasattr(chain, 'calls'):  # Changed from direct condition to hasattr check
                     # Process calls
                     calls_data = []
                     
@@ -311,7 +311,7 @@ def fetch_dividend_schedule(
             # Get historical dividends
             dividends = ticker.dividends
             
-            if not dividends.empty:
+            if len(dividends) > 0:  # Changed from direct emptiness check to length check
                 # Get most recent dividend
                 last_div = dividends.iloc[-1]
                 last_div_date = dividends.index[-1]
