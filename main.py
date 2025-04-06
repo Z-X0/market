@@ -225,30 +225,33 @@ def save_results(all_results, backtests, pdf_report, output_dir):
     """
     # Save JSON results
     json_fname = os.path.join(output_dir, "Enhanced_Covered_Call_Analysis.json")
-    try:
-        with open(json_fname, "w") as f:
-            json.dump(convert_keys(all_results), f, indent=4)
-        logger.info(f"Saved results to {json_fname}")
-    except Exception as e:
-        logger.error(f"Error saving analysis results: {e}")
+    with open(json_fname, "w") as f:
+        json.dump(convert_keys(all_results), f, indent=4)
+    logger.info(f"Saved results to {json_fname}")
     
     # Save backtest results
     backtest_fname = os.path.join(output_dir, "Backtest_Results.json")
-    try:
-        with open(backtest_fname, "w") as f:
-            json.dump(convert_keys(backtests), f, indent=4)
-        logger.info(f"Saved backtest results to {backtest_fname}")
-    except Exception as e:
-        logger.error(f"Error saving backtest results: {e}")
+    with open(backtest_fname, "w") as f:
+        json.dump(convert_keys(backtests), f, indent=4)
+    logger.info(f"Saved backtest results to {backtest_fname}")
     
     # Save PDF report
     if pdf_report:
-        pdf_fname = os.path.join(output_dir, "Enhanced_Covered_Call_Analysis.pdf")
         try:
-            pdf_report.output(pdf_fname)
+            pdf_fname = os.path.join(output_dir, "Enhanced_Covered_Call_Analysis.pdf")
+            pdf_report.output(pdf_fname, 'F')
             logger.info(f"Saved PDF report to {pdf_fname}")
         except Exception as e:
             logger.error(f"Error saving PDF report: {e}")
+            # Try with a different encoding or using binary mode
+            try:
+                pdf_fname = os.path.join(output_dir, "Enhanced_Covered_Call_Analysis.pdf")
+                pdf_data = pdf_report.output(dest='S').encode('latin-1', errors='replace')
+                with open(pdf_fname, 'wb') as f:
+                    f.write(pdf_data)
+                logger.info(f"Saved PDF report to {pdf_fname} (using alternative method)")
+            except Exception as e2:
+                logger.error(f"Failed to save PDF report with alternative method: {e2}")
 
 
 def main():

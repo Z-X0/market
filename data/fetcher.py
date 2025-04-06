@@ -191,47 +191,82 @@ def fetch_option_chains(
     try:
         ticker = yf.Ticker(symbol)
         
-        for dte in dtes:
-            try:
-                # Calculate expiration date
-                expiry = datetime.now() + timedelta(days=dte)
-                exp_str = expiry.strftime('%Y-%m-%d')
+        # Get all available expirations first
+        all_expirations = []
+        try:
+            all_expirations = ticker.options
+            if not all_expirations:
+                logger.warning(f"No options data available for {symbol}")
+                return option_chains
                 
-                # Fetch option chain
-                chain = ticker.option_chain(exp_str)
-                
-                if hasattr(chain, 'calls'):  # Changed from direct condition to hasattr check
-                    # Process calls
-                    calls_data = []
-                    
-                    for _, row in chain.calls.iterrows():
-                        # Calculate mid price
-                        bid = row.get('bid', 0)
-                        ask = row.get('ask', 0)
-                        mid = (bid + ask) / 2 if bid > 0 and ask > 0 else 0
-                        
-                        calls_data.append({
-                            'strike': row.get('strike', 0),
-                            'bid': bid,
-                            'ask': ask,
-                            'mid': mid,
-                            'implied_vol': row.get('impliedVolatility', 0),
-                            'volume': row.get('volume', 0),
-                            'open_interest': row.get('openInterest', 0),
-                            'option_type': 'call'
-                        })
-                    
-                    if calls_data:
-                        option_chains[dte] = calls_data
-                        logger.debug(f"Fetched {len(calls_data)} call options for {symbol} with DTE={dte}")
+            logger.debug(f"Available expirations for {symbol}: {all_expirations}")
+        except Exception as e:
+            logger.error(f"Error getting options expirations for {symbol}: {e}")
+            return option_chains
             
-            except Exception as e:
-                logger.warning(f"Error fetching {dte}-day options for {symbol}: {e}")
-                continue
+        # Current date for DTE calculation
+        current_date = datetime.now().date()
+        
+        # Match requested DTEs to available expirations
+        for dte_target in dtes:
+            target_date = current_date + timedelta(days=dte_target)
+            
+            # Find closest available expiration to the target date
+            best_exp = None
+            min_diff = float('inf')
+            
+            for exp_str in all_expirations:
+                try:
+                    exp_date = datetime.strptime(exp_str, '%Y-%m-%d').date()
+                    diff = abs((exp_date - target_date).days)
+                    
+                    if diff < min_diff:
+                        min_diff = diff
+                        best_exp = exp_str
+                except Exception as e:
+                    logger.warning(f"Error parsing expiration date {exp_str}: {e}")
+                    continue
+            
+            # If found a reasonable match (within 10 days of target)
+            if best_exp and min_diff <= 10:
+                try:
+                    # Calculate actual DTE
+                    actual_dte = (datetime.strptime(best_exp, '%Y-%m-%d').date() - current_date).days
+                    
+                    # Fetch option chain
+                    chain = ticker.option_chain(best_exp)
+                    
+                    if chain and hasattr(chain, 'calls'):
+                        # Process calls
+                        calls_data = []
+                        
+                        for _, row in chain.calls.iterrows():
+                            # Calculate mid price
+                            bid = row.get('bid', 0)
+                            ask = row.get('ask', 0)
+                            mid = (bid + ask) / 2 if bid > 0 and ask > 0 else 0
+                            
+                            calls_data.append({
+                                'strike': row.get('strike', 0),
+                                'bid': bid,
+                                'ask': ask,
+                                'mid': mid,
+                                'implied_vol': row.get('impliedVolatility', 0),
+                                'volume': row.get('volume', 0),
+                                'open_interest': row.get('openInterest', 0),
+                                'option_type': 'call'
+                            })
+                        
+                        if calls_data:
+                            option_chains[actual_dte] = calls_data
+                            logger.debug(f"Fetched {len(calls_data)} call options for {symbol} with DTE={actual_dte} (requested {dte_target})")
+                except Exception as e:
+                    logger.warning(f"Error fetching options for {symbol} with expiration {best_exp}: {e}")
         
     except Exception as e:
         logger.error(f"Error fetching option chains for {symbol}: {e}")
     
+    return option_chains
     return option_chains
 
 
