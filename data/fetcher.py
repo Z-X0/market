@@ -267,7 +267,6 @@ def fetch_option_chains(
         logger.error(f"Error fetching option chains for {symbol}: {e}")
     
     return option_chains
-    return option_chains
 
 
 def fetch_market_factors_data(

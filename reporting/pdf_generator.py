@@ -1,198 +1,617 @@
-# reporting/pdf_generator.py
-
 """
-PDF Report Generator Module.
+Enhanced PDF Generator for Options Strategy Analysis.
 
-This module provides functions for generating comprehensive PDF reports
-with visualizations, tables, and analysis of options strategies.
+This module provides a streamlined approach to generating professional, 
+visually appealing PDF reports for options strategy analysis.
 """
 
 import os
 import logging
-from datetime import datetime, timedelta
+import tempfile
+from datetime import datetime
 from typing import Dict, List, Any, Optional, Union
 
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 from matplotlib import cm
-import matplotlib.dates as mdates
-from mpl_toolkits.mplot3d import Axes3D
+from fpdf import FPDF
 
-# Import local modules
-from reporting.chart_generator import (
-    generate_regime_chart,
-    generate_vol_comparison_chart,
-    generate_option_chain_analysis,
-    generate_backtest_pnl_chart,
-    generate_regime_performance_chart,
-    convert_keys
-)
-
-# Try to import FPDF
-try:
-    from fpdf import FPDF
-    HAS_FPDF = True
-except ImportError:
-    HAS_FPDF = False
-    logging.warning("FPDF not installed, PDF generation disabled")
-
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Helper functions
-def get_strategy_recommendation(regime: int) -> str:
-    """Get strategy recommendation based on market regime."""
-    regime_recommendations = {
-        0: "very conservative",  # Severe Bearish
-        1: "conservative",       # Bearish
-        2: "cautious",           # Weak Bearish
-        3: "balanced",           # Neutral
-        4: "moderately aggressive",  # Weak Bullish
-        5: "aggressive",         # Bullish
-        6: "very aggressive"     # Strong Bullish
-    }
-    return regime_recommendations.get(regime, "balanced")
+# Define constants for styling
+COLORS = {
+    'primary': (25, 65, 120),     # Dark blue
+    'secondary': (65, 105, 225),  # Royal blue
+    'accent': (135, 206, 250),    # Light blue
+    'success': (40, 167, 69),     # Green
+    'danger': (220, 53, 69),      # Red
+    'warning': (255, 193, 7),     # Yellow
+    'light': (248, 249, 250),     # Light gray
+    'dark': (52, 58, 64),         # Dark gray
+    'white': (255, 255, 255),     # White
+    'black': (0, 0, 0)            # Black
+}
 
-def get_target_yield(risk_level: str) -> float:
-    """Get target annual premium yield based on risk level."""
-    yields = {
-        'conservative': 0.12,  # 12%
-        'moderate': 0.16,      # 16%
-        'aggressive': 0.20     # 20%
-    }
-    return yields.get(risk_level, 0.12)
+REGIME_COLORS = {
+    0: '#8B0000',  # Severe Bearish - dark red
+    1: '#FF4136',  # Bearish - red
+    2: '#FF851B',  # Weak Bearish - orange
+    3: '#FFDC00',  # Neutral - yellow
+    4: '#2ECC40',  # Weak Bullish - light green
+    5: '#008000',  # Bullish - green
+    6: '#006400',  # Strong Bullish - dark green
+}
 
-def get_delta_range(risk_level: str) -> str:
-    """Get target delta range based on risk level."""
-    delta_ranges = {
-        'conservative': "0.15 - 0.25",
-        'moderate': "0.25 - 0.35",
-        'aggressive': "0.30 - 0.45"
-    }
-    return delta_ranges.get(risk_level, "0.20 - 0.30")
-
-def get_dte_range(risk_level: str) -> str:
-    """Get target DTE range based on risk level."""
-    dte_ranges = {
-        'conservative': "30 - 45 days",
-        'moderate': "21 - 45 days",
-        'aggressive': "14 - 30 days"
-    }
-    return dte_ranges.get(risk_level, "30 - 45 days")
-
-def get_allocation(regime: int, risk_level: str) -> float:
-    """Get portfolio allocation percentage based on regime and risk level."""
-    base_allocation = {
-        'conservative': 0.5,
-        'moderate': 0.7,
-        'aggressive': 0.9
-    }.get(risk_level, 0.6)
-    regime_adjustment = {
-        0: -0.2, 1: -0.1, 2: -0.05,
-        3: 0.0, 4: 0.05, 5: 0.1, 6: 0.2
-    }.get(regime, 0.0)
-    return max(0.1, min(1.0, base_allocation + regime_adjustment))
+REGIME_NAMES = {
+    0: "Severe Bearish",
+    1: "Bearish",
+    2: "Weak Bearish", 
+    3: "Neutral", 
+    4: "Weak Bullish", 
+    5: "Bullish", 
+    6: "Strong Bullish"
+}
 
 
-class EnhancedQuantPDF(FPDF):
-    """Enhanced PDF class with better styling and visualization capabilities."""
-
+class EnhancedPDF(FPDF):
+    """Enhanced PDF class with modern styling and better layout."""
+    
     def __init__(self, orientation='L', unit='mm', format='A4'):
-        super().__init__(orientation, unit, format)
-        self.set_auto_page_break(auto=True, margin=15)
+        """Initialize the PDF with consistent styling."""
+        super().__init__(orientation=orientation, unit=unit, format=format)
         self.set_margins(10, 10, 10)
+        self.set_auto_page_break(auto=True, margin=15)
+        self.page_width = 297 if orientation == 'L' else 210  # A4 dimensions
+        
+        # Add fonts if they exist
         try:
-            self.add_font('Arial', '', 'arial.ttf', uni=True)
+            self.add_font('Roboto', '', 'Roboto-Regular.ttf', uni=True)
+            self.add_font('Roboto', 'B', 'Roboto-Bold.ttf', uni=True)
+            self.add_font('Roboto', 'I', 'Roboto-Italic.ttf', uni=True)
+            self.default_font = 'Roboto'
         except Exception:
-            logger.warning("Arial font not found, using default font")
-
-    def sanitize_text(self, text):
-        """Sanitize text for PDF output, replacing non-latin1 chars."""
-        if not isinstance(text, str):
-            text = str(text)
-        return text.encode('latin-1', 'replace').decode('latin-1')
-
-    # Override cell and multi_cell to sanitize every string
-    def cell(self, w, h=0, txt='', border=0, ln=0, align='', fill=False, link=''):
-        safe_txt = self.sanitize_text(txt)
-        return super().cell(w, h, safe_txt, border, ln, align, fill, link)
-
-    def multi_cell(self, w, h, txt, border=0, align='J', fill=False):
-        safe_txt = self.sanitize_text(txt)
-        return super().multi_cell(w, h, safe_txt, border, align, fill)
-
-    def create_section_header(self, title, level=1):
-        """Create formatted section header with better styling."""
-        if level == 1:
-            self.set_font("Arial", "B", 16)
-            self.set_fill_color(25, 65, 120)
-            self.set_text_color(255, 255, 255)
-            self.cell(0, 10, title, 0, 1, "L", True)
-            self.set_text_color(0, 0, 0)
-        elif level == 2:
-            self.set_font("Arial", "B", 14)
-            self.set_fill_color(65, 105, 225)
-            self.set_text_color(255, 255, 255)
-            self.cell(0, 8, title, 0, 1, "L", True)
-            self.set_text_color(0, 0, 0)
-        else:
-            self.set_font("Arial", "I", 12)
-            self.set_fill_color(135, 206, 250)
-            self.cell(0, 6, title, 0, 1, "L", True)
-        self.ln(4)
-
-    def insert_chart(self, fig, caption="", width=180):
-        """Insert matplotlib figure with better styling."""
-        import uuid
-        fname = f"temp_{uuid.uuid4().hex}.png"
-        fig.savefig(fname, dpi=300, bbox_inches="tight", facecolor='#F8F9FA')
-        plt.close(fig)
-        self.image(fname, w=width)
-        os.remove(fname)
-        if caption:
-            self.set_font("Arial", "I", 9)
-            self.set_fill_color(240, 240, 240)
-            self.cell(width, 5, caption, 0, 1, 'C', True)
+            logger.warning("Roboto font not found, using default font")
+            self.default_font = 'Arial'
+    
+    def header(self):
+        """Add a consistent, professional header to each page."""
+        # Save the current position
+        y_position = self.get_y()
+        
+        # Add the header with date and page number
+        self.set_font(self.default_font, '', 8)
+        self.set_text_color(*COLORS['dark'])
+        self.cell(0, 10, f'Enhanced Options Strategy Analysis - {datetime.now().strftime("%Y-%m-%d")}', 0, 0, 'L')
+        self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'R')
+        self.ln(8)
+        
+        # Draw a subtle line under the header
+        self.set_draw_color(*COLORS['accent'])
+        self.line(10, self.get_y(), self.page_width - 10, self.get_y())
         self.ln(5)
-
-    def create_info_box(self, title, content, width=180):
-        """Create highlighted information box with better styling."""
-        self.set_fill_color(230, 240, 250)
-        self.set_draw_color(25, 65, 120)
-        self.set_line_width(0.3)
-        self.set_font("Arial", "B", 10)
-        self.cell(width, 7, title, 1, 1, "L", True)
-        self.set_font("Arial", "", 9)
-        self.multi_cell(width, 5, content, 1, "L", True)
+    
+    def footer(self):
+        """Add a consistent footer to each page."""
+        # Position at 15mm from bottom
+        self.set_y(-15)
+        
+        # Draw a subtle line above the footer
+        self.set_draw_color(*COLORS['accent'])
+        self.line(10, self.get_y(), self.page_width - 10, self.get_y())
+        self.ln(1)
+        
+        # Add the footer text
+        self.set_font(self.default_font, '', 8)
+        self.set_text_color(*COLORS['dark'])
+        self.cell(0, 10, 'Generated by Enhanced Options Strategy Analysis Tool', 0, 0, 'C')
+    
+    def chapter_title(self, title):
+        """Add a well-styled chapter title."""
+        self.set_font(self.default_font, 'B', 18)
+        self.set_fill_color(*COLORS['primary'])
+        self.set_text_color(*COLORS['white'])
+        self.cell(0, 12, title, 0, 1, 'L', True)
         self.ln(4)
-
-    def create_data_table(self, headers, data, width=180, col_widths=None):
-        """Create a nicely formatted data table."""
+    
+    def section_title(self, title):
+        """Add a well-styled section title."""
+        self.set_font(self.default_font, 'B', 14)
+        self.set_fill_color(*COLORS['secondary'])
+        self.set_text_color(*COLORS['white'])
+        self.cell(0, 10, title, 0, 1, 'L', True)
+        self.ln(4)
+    
+    def subsection_title(self, title):
+        """Add a well-styled subsection title."""
+        self.set_font(self.default_font, 'B', 12)
+        self.set_fill_color(*COLORS['accent'])
+        self.set_text_color(*COLORS['dark'])
+        self.cell(0, 8, title, 0, 1, 'L', True)
+        self.ln(4)
+    
+    def body_text(self, text):
+        """Add nicely formatted body text."""
+        self.set_font(self.default_font, '', 10)
+        self.set_text_color(*COLORS['black'])
+        self.multi_cell(0, 5, text)
+        self.ln(2)
+    
+    def info_box(self, title, content, width=0, fill_color=None, text_color=None):
+        """Create a visually appealing info box."""
+        if width == 0:
+            width = self.page_width - 20
+        
+        # Set colors
+        if fill_color is None:
+            fill_color = COLORS['light']
+        if text_color is None:
+            text_color = COLORS['dark']
+        
+        # Box title
+        self.set_font(self.default_font, 'B', 10)
+        self.set_fill_color(*fill_color)
+        self.set_text_color(*text_color)
+        self.set_draw_color(*COLORS['secondary'])
+        self.cell(width, 8, title, 1, 1, 'L', True)
+        
+        # Box content
+        self.set_font(self.default_font, '', 9)
+        self.set_fill_color(*COLORS['white'])
+        self.set_text_color(*COLORS['black'])
+        self.multi_cell(width, 5, content, 1, 'L', False)
+        self.ln(4)
+    
+    def add_chart(self, fig, caption="", width=0):
+        """Insert a matplotlib figure with better styling."""
+        if width == 0:
+            width = self.page_width - 20
+        
+        # Save the figure to a temporary file
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmpfile:
+            fig.savefig(tmpfile.name, dpi=300, bbox_inches="tight", facecolor='#F8F9FA')
+        
+        # Add the figure to the PDF
+        try:
+            self.image(tmpfile.name, x=10, w=width)
+            
+            # Add caption if provided
+            if caption:
+                self.set_font(self.default_font, 'I', 9)
+                self.set_fill_color(*COLORS['light'])
+                self.cell(width, 5, caption, 0, 1, 'C', True)
+            
+            self.ln(4)
+        finally:
+            # Clean up the temporary file
+            os.unlink(tmpfile.name)
+            plt.close(fig)
+    
+    def add_table(self, headers, data, width=0, col_widths=None):
+        """Create a well-styled, easy-to-read table."""
+        if width == 0:
+            width = self.page_width - 20
+        
         if col_widths is None:
             col_widths = [width / len(headers)] * len(headers)
-        # Table header
-        self.set_font("Arial", "B", 9)
-        self.set_fill_color(25, 65, 120)
-        self.set_text_color(255, 255, 255)
+        
+        # Table headers
+        self.set_font(self.default_font, 'B', 9)
+        self.set_fill_color(*COLORS['primary'])
+        self.set_text_color(*COLORS['white'])
         for i, header in enumerate(headers):
-            self.cell(col_widths[i], 7, self.sanitize_text(header), 1, 0, "C", True)
+            self.cell(col_widths[i], 7, str(header), 1, 0, 'C', True)
         self.ln()
-        # Table data
-        self.set_text_color(0, 0, 0)
-        self.set_font("Arial", "", 9)
-        fill = False
-        for row in data:
-            self.set_fill_color(240, 240, 245 if fill else 255)
+        
+        # Table rows
+        self.set_font(self.default_font, '', 9)
+        self.set_text_color(*COLORS['black'])
+        
+        for row_idx, row in enumerate(data):
+            # Alternate row colors for better readability
+            if row_idx % 2 == 0:
+                self.set_fill_color(240, 240, 245)
+            else:
+                self.set_fill_color(255, 255, 255)
+            
             for i, cell in enumerate(row):
+                # Format the cell content
                 if isinstance(cell, float):
-                    # Format numbers
-                    cell_text = f"{cell:.2f}" if abs(cell) >= 0.1 else f"{cell:.4f}"
+                    if abs(cell) < 0.01:
+                        cell_text = f"{cell:.4f}"
+                    else:
+                        cell_text = f"{cell:.2f}"
                 else:
                     cell_text = str(cell)
-                align = "R" if isinstance(cell, (int, float)) else "L"
-                self.cell(col_widths[i], 6, self.sanitize_text(cell_text), 1, 0, align, True)
+                
+                # Right-align numbers, left-align text
+                align = 'R' if isinstance(cell, (int, float)) else 'L'
+                
+                self.cell(col_widths[i], 6, cell_text, 1, 0, align, True)
+            
             self.ln()
-            fill = not fill
+        
+        self.ln(4)
+    
+    def add_metric_grid(self, metrics, num_columns=3, width=0):
+        """Add a grid of metrics with clean styling."""
+        if width == 0:
+            width = self.page_width - 20
+        
+        # Calculate widths
+        col_width = width / num_columns
+        label_width = col_width * 0.4
+        value_width = col_width * 0.6
+        
+        # Create the grid
+        row = 0
+        col = 0
+        
+        for label, value in metrics.items():
+            # Set position
+            x_pos = 10 + col * col_width
+            
+            # Save current position
+            current_x = self.get_x()
+            current_y = self.get_y()
+            
+            # Position for this metric
+            self.set_xy(x_pos, current_y)
+            
+            # Label
+            self.set_font(self.default_font, '', 9)
+            self.set_text_color(*COLORS['dark'])
+            self.cell(label_width, 6, label, 0, 0, 'L')
+            
+            # Value
+            self.set_font(self.default_font, 'B', 10)
+            self.set_text_color(*COLORS['primary'])
+            self.cell(value_width, 6, value, 0, 0, 'R')
+            
+            # Move to next column or row
+            col += 1
+            if col >= num_columns:
+                col = 0
+                row += 1
+                self.ln(8)
+            else:
+                # Reset position for next cell in same row
+                self.set_xy(current_x, current_y)
+        
+        # Ensure we move to the next row if we ended mid-row
+        if col > 0:
+            self.ln(8)
+
+
+def generate_regime_chart(
+    symbol: str, 
+    regime_data: List[Dict[str, Any]], 
+    current_regime: int
+) -> plt.Figure:
+    """
+    Generate an improved market regime chart.
+    
+    Parameters:
+    symbol (str): Stock symbol
+    regime_data (list): List of regime data points with date and regime value
+    current_regime (int): Current regime value
+    
+    Returns:
+    matplotlib.figure.Figure: Generated figure
+    """
+    # Create figure with better styling
+    plt.style.use('seaborn-v0_8-whitegrid')
+    fig, axs = plt.subplots(2, 1, figsize=(10, 6), sharex=True, 
+                          gridspec_kw={'height_ratios': [3, 1]},
+                          facecolor='#F8F9FA')
+    
+    # Extract data
+    dates = [pd.to_datetime(point['date']) for point in regime_data]
+    prices = [point.get('price', 0) for point in regime_data]
+    regimes = [point.get('regime', 3) for point in regime_data]
+    
+    # Price chart (simulated price if not provided)
+    if all(p == 0 for p in prices):
+        # Generate simulated prices based on regimes if not provided
+        base_price = 100
+        price_changes = [0]
+        for r in regimes[1:]:
+            # More bullish regimes = positive changes, bearish = negative
+            regime_factor = (r - 3) / 3  # -1 to 1 scale
+            change = 0.01 * (regime_factor * 2 + np.random.normal(0, 0.01))
+            price_changes.append(change)
+        
+        # Cumulative returns to price
+        prices = [base_price * (1 + c) for c in np.cumsum(price_changes)]
+    
+    # Plot price
+    axs[0].plot(dates, prices, color='#0066CC', linewidth=2, label=f'{symbol} Price')
+    
+    # Configure price chart
+    axs[0].set_title(f"{symbol} - Price Action and Regime Detection", 
+                    fontsize=14, fontweight='bold')
+    axs[0].legend(loc='upper left', frameon=True)
+    axs[0].set_ylabel('Price ($)', fontsize=12)
+    axs[0].grid(True, alpha=0.3)
+    
+    # Format y-axis as currency
+    axs[0].yaxis.set_major_formatter('${x:,.2f}')
+    
+    # Regime chart
+    # Create colorful regime visualization
+    for i in range(len(dates)-1):
+        regime = regimes[i]
+        axs[1].fill_between([dates[i], dates[i+1]], 
+                           [regime] * 2, 
+                           [regime+0.8] * 2,
+                           color=REGIME_COLORS.get(regime, '#CCCCCC'), 
+                           alpha=0.8)
+    
+    # Configure regime chart
+    axs[1].set_yticks(np.arange(0.4, 7, 1))
+    axs[1].set_yticklabels([REGIME_NAMES.get(i, f"Regime {i}") for i in range(7)])
+    axs[1].set_ylabel('Market Regime', fontsize=12)
+    axs[1].set_xlabel('Date', fontsize=12)
+    axs[1].grid(False)
+    
+    # Format x-axis dates
+    fig.autofmt_xdate()
+    
+    # Add current regime highlight
+    axs[1].text(0.02, 0.5, f"Current: {REGIME_NAMES.get(current_regime, f'Regime {current_regime}')}",
+               transform=axs[1].transAxes, fontsize=10, fontweight='bold',
+               bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8))
+    
+    plt.tight_layout()
+    return fig
+
+
+def generate_volatility_chart(
+    volatility_data: Dict[str, float], 
+    portfolio_vol: float
+) -> plt.Figure:
+    """
+    Generate improved volatility comparison chart.
+    
+    Parameters:
+    volatility_data (dict): Symbol to volatility mapping
+    portfolio_vol (float): Overall portfolio volatility
+    
+    Returns:
+    matplotlib.figure.Figure: Generated figure
+    """
+    # Prepare data
+    symbols = list(volatility_data.keys())
+    vols = [volatility_data[s] for s in symbols]
+    
+    # Create figure with better styling
+    plt.style.use('seaborn-v0_8-whitegrid')
+    fig, ax = plt.subplots(figsize=(10, 5), facecolor='#F8F9FA')
+    
+    # Plot bars with better colors
+    colors = ['#3498DB', '#E74C3C', '#2ECC71', '#F39C12', '#9B59B6', '#1ABC9C']
+    bars = ax.bar(symbols, vols, color=colors[:len(symbols)], alpha=0.8, 
+                width=0.6, edgecolor='white', linewidth=1)
+    
+    # Add data labels on top of bars
+    for bar in bars:
+        height = bar.get_height()
+        ax.annotate(f'{height:.0%}',
+                   xy=(bar.get_x() + bar.get_width() / 2, height),
+                   xytext=(0, 3),  # 3 points vertical offset
+                   textcoords="offset points",
+                   ha='center', va='bottom',
+                   fontsize=10)
+    
+    # Add portfolio volatility line
+    ax.axhline(y=portfolio_vol, color='red', linestyle='--', linewidth=2, 
+              label=f'Portfolio Volatility: {portfolio_vol:.1%}')
+    
+    # Improve chart styling
+    ax.set_title("Volatility Analysis", fontsize=14, fontweight='bold')
+    ax.set_xlabel("Symbol", fontsize=12)
+    ax.set_ylabel("Annualized Volatility", fontsize=12)
+    
+    # Format y-axis as percentage
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.0%}'))
+    
+    # Add subtle horizontal grid lines
+    ax.yaxis.grid(True, linestyle='--', alpha=0.7)
+    ax.set_axisbelow(True)
+    
+    # Enhance legend
+    ax.legend(fontsize=10)
+    
+    plt.tight_layout()
+    return fig
+
+
+def generate_backtest_chart(
+    backtest_data: Dict[str, Any]
+) -> plt.Figure:
+    """
+    Generate improved backtest performance chart.
+    
+    Parameters:
+    backtest_data (dict): Backtest results
+    
+    Returns:
+    matplotlib.figure.Figure: Generated figure
+    """
+    # Extract data
+    dates = backtest_data.get('daily_index', [])
+    values = backtest_data.get('daily_cumulative_pnl', [])
+    
+    # Create figure with better styling
+    plt.style.use('seaborn-v0_8-whitegrid')
+    fig, ax = plt.subplots(figsize=(10, 5), facecolor='#F8F9FA')
+    
+    # Plot with improved styling
+    ax.plot(dates, values, color='#2980B9', linewidth=2.5, alpha=0.8)
+    
+    # Add shaded area below the line
+    ax.fill_between(dates, 0, values, color='#2980B9', alpha=0.2)
+    
+    # Create markers for key points
+    if values:
+        # First, last, max, min points
+        first_idx, last_idx = 0, len(values) - 1
+        max_idx = np.argmax(values)
+        min_idx = np.argmin(values)
+        
+        key_points = [(first_idx, 'First'), (last_idx, 'Last'), 
+                     (max_idx, 'Max'), (min_idx, 'Min')]
+        
+        for idx, label in key_points:
+            ax.plot(dates[idx], values[idx], 'o', markersize=8, 
+                  markerfacecolor='white', markeredgecolor='#E74C3C', markeredgewidth=2)
+            
+            # Add annotations with formatted values
+            ax.annotate(f"{label}: ${values[idx]:,.0f}", 
+                      xy=(dates[idx], values[idx]),
+                      xytext=(0, 10) if label in ['Max', 'Last'] else (0, -25),
+                      textcoords="offset points",
+                      ha='center',
+                      bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8))
+    
+    # Calculate and display key metrics
+    if backtest_data.get('total_return') is not None:
+        total_ret = backtest_data.get('total_return')
+        ann_ret = backtest_data.get('annualized_return', 0)
+        max_dd = backtest_data.get('max_drawdown', 0)
+        
+        metrics_text = (f"Total Return: {total_ret:.2%}     "
+                       f"Ann. Return: {ann_ret:.2%}     "
+                       f"Max Drawdown: {max_dd:.2%}")
+        
+        # Add metrics box
+        ax.text(0.5, 0.02, metrics_text, 
+               transform=ax.transAxes,
+               ha='center', va='bottom',
+               bbox=dict(boxstyle="round,pad=0.5", fc="#F8F9FA", ec="#CCCCCC", alpha=0.9))
+    
+    # Enhance chart styling
+    symbol = backtest_data.get('symbol', 'Portfolio')
+    ax.set_title(f"{symbol} Covered Call Strategy Performance", 
+               fontsize=14, fontweight='bold')
+    ax.set_xlabel("Date", fontsize=12)
+    ax.set_ylabel("Cumulative P&L ($)", fontsize=12)
+    
+    # Format y-axis as currency
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'${y:,.0f}'))
+    
+    # Add subtle grid lines
+    ax.grid(True, linestyle='--', alpha=0.3)
+    ax.set_axisbelow(True)
+    
+    # Auto-format date axis
+    fig.autofmt_xdate()
+    
+    plt.tight_layout()
+    return fig
+
+
+def generate_premium_chart(
+    option_data: List[Dict[str, Any]], 
+    current_price: float
+) -> plt.Figure:
+    """
+    Generate options premium chart.
+    
+    Parameters:
+    option_data (list): List of option data with strike and premium
+    current_price (float): Current stock price
+    
+    Returns:
+    matplotlib.figure.Figure: Generated figure
+    """
+    # Prepare data
+    if not option_data:
+        option_data = [
+            {'strike': current_price * 0.9, 'premium': current_price * 0.08},
+            {'strike': current_price * 0.95, 'premium': current_price * 0.05},
+            {'strike': current_price, 'premium': current_price * 0.03},
+            {'strike': current_price * 1.05, 'premium': current_price * 0.02},
+            {'strike': current_price * 1.1, 'premium': current_price * 0.01},
+            {'strike': current_price * 1.15, 'premium': current_price * 0.005}
+        ]
+    
+    strikes = [o['strike'] for o in option_data]
+    premiums = [o['premium'] for o in option_data]
+    
+    # Calculate premium yield
+    premium_yields = [p / current_price * 100 for p in premiums]
+    
+    # Create figure with better styling
+    plt.style.use('seaborn-v0_8-whitegrid')
+    fig, ax = plt.subplots(figsize=(10, 5), facecolor='#F8F9FA')
+    
+    # Define color based on moneyness
+    def get_bar_color(strike):
+        if strike < current_price * 0.98:  # ITM
+            return '#27AE60'  # Green
+        elif strike > current_price * 1.02:  # OTM
+            return '#3498DB'  # Blue
+        else:  # ATM
+            return '#F39C12'  # Orange
+    
+    # Plot bars with color based on moneyness
+    colors = [get_bar_color(strike) for strike in strikes]
+    bars = ax.bar(strikes, premium_yields, color=colors, alpha=0.7, width=current_price*0.02)
+    
+    # Add current price line
+    ax.axvline(current_price, color='red', linestyle='--', alpha=0.7)
+    ax.text(current_price, ax.get_ylim()[1] * 0.9, f"Current: ${current_price:.2f}", 
+           ha='center', va='center', color='red', fontweight='bold',
+           bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="gray", alpha=0.8))
+    
+    # Add data labels
+    for bar in bars:
+        height = bar.get_height()
+        if height > 0.5:  # Only label significant bars
+            ax.annotate(f"{height:.1f}%",
+                       xy=(bar.get_x() + bar.get_width()/2, height),
+                       xytext=(0, 3),  # 3 points vertical offset
+                       textcoords="offset points",
+                       ha='center', va='bottom', fontsize=8)
+    
+    # Enhance chart styling
+    ax.set_title("Option Premium Analysis", fontsize=14, fontweight='bold')
+    ax.set_xlabel("Strike Price ($)", fontsize=12)
+    ax.set_ylabel("Premium % of Current Price", fontsize=12)
+    
+    # Format axes
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f'{y:.1f}%'))
+    ax.xaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'${x:.0f}'))
+    
+    # Create custom legend
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor='#27AE60', alpha=0.7, label='ITM'),
+        Patch(facecolor='#F39C12', alpha=0.7, label='ATM'),
+        Patch(facecolor='#3498DB', alpha=0.7, label='OTM'),
+    ]
+    ax.legend(handles=legend_elements, loc='upper right')
+    
+    plt.tight_layout()
+    return fig
+
+
+def format_currency(value: float, decimals: int = 0) -> str:
+    """Format value as currency."""
+    if np.isnan(value):
+        return "$—"
+    return f"${value:,.{decimals}f}"
+
+
+def format_percentage(value: float, decimals: int = 2) -> str:
+    """Format value as percentage."""
+    if np.isnan(value):
+        return "—%"
+    return f"{value * 100:.{decimals}f}%"
 
 
 def generate_enhanced_pdf_report(
@@ -200,70 +619,83 @@ def generate_enhanced_pdf_report(
     analysis_results: Dict[str, Dict[str, Any]],
     backtests: Dict[str, Dict[str, Any]],
     market_analysis: Dict[str, Any]
-) -> Optional[EnhancedQuantPDF]:
+) -> Optional[EnhancedPDF]:
     """
-    Generate enhanced quantitative analysis PDF report.
-
+    Generate a professional PDF report for options strategy analysis.
+    
     Parameters:
-    portfolio (dict): Portfolio positions
+    portfolio (dict): Portfolio positions {symbol: shares}
     analysis_results (dict): Analysis results by risk level
-    backtests (dict): Backtest results by symbol
+    backtests (dict): Backtest results
     market_analysis (dict): Market analysis data
-
+    
     Returns:
-    EnhancedQuantPDF: Generated PDF report or None if FPDF not available
+    EnhancedPDF: Generated PDF object
     """
-    if not HAS_FPDF:
-        logger.warning("FPDF not available, cannot generate PDF report")
-        return None
-
-    pdf = EnhancedQuantPDF('L', 'mm', 'A4')
+    # Initialize PDF
+    pdf = EnhancedPDF('L')  # Landscape
     pdf.add_page()
-
-    # Cover page
-    pdf.set_font('Arial', 'B', 24)
-    pdf.cell(0, 20, "Enhanced Options Strategy Analysis", 0, 1, 'C')
-    pdf.set_font('Arial', 'B', 16)
-    pdf.cell(0, 15, "Covered Call Strategy Optimization", 0, 1, 'C')
-    pdf.set_font('Arial', '', 12)
-    current_date = datetime.now().strftime('%Y-%m-%d %H:%M')
-    pdf.cell(0, 10, f"Generated on: {current_date}", 0, 1, 'C')
-
+    
+    # Cover Page
+    # ----------------------------------------------------------------
+    pdf.ln(20)  # Add some space at the top
+    pdf.set_font(pdf.default_font, 'B', 24)
+    pdf.set_text_color(*COLORS['primary'])
+    pdf.cell(0, 15, "Enhanced Options Strategy Analysis", 0, 1, 'C')
+    
+    pdf.set_font(pdf.default_font, 'B', 18)
+    pdf.set_text_color(*COLORS['secondary'])
+    pdf.cell(0, 10, "Covered Call Strategy Optimization", 0, 1, 'C')
+    
+    pdf.ln(15)
+    
+    pdf.set_font(pdf.default_font, '', 12)
+    pdf.set_text_color(*COLORS['dark'])
+    pdf.cell(0, 8, f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M')}", 0, 1, 'C')
+    
+    pdf.ln(10)
+    
     # Portfolio summary
-    num_symbols = len(portfolio)
-    total_shares = sum(portfolio.values())
-    pdf.set_font('Arial', 'B', 12)
-    pdf.cell(0, 15, f"Portfolio: {num_symbols} symbols, {total_shares:,} shares", 0, 1, 'C')
-
-    # Portfolio table
-    pdf.set_font('Arial', 'B', 10)
-    pdf.ln(5)
-    pdf.cell(0, 8, "Portfolio Composition:", 0, 1, 'L')
+    pdf.set_font(pdf.default_font, 'B', 14)
+    pdf.set_text_color(*COLORS['primary'])
+    pdf.cell(0, 10, f"Portfolio: {len(portfolio)} symbols, {sum(portfolio.values()):,} shares", 0, 1, 'C')
+    
+    # Portfolio composition table
     headers = ['Symbol', 'Shares', 'Weight']
     data = []
+    
+    # Calculate total value for weights
     total_value = 0
+    symbol_prices = {}
+    
     for symbol, shares in portfolio.items():
-        price = next(
-            (res['position_results'][symbol]['current_price']
-             for res in analysis_results.values()
-             if symbol in res.get('position_results', {})),
-            0
-        )
+        # Try to find price in analysis results
+        price = 0
+        for risk_level, results in analysis_results.items():
+            pos_results = results.get('position_results', {})
+            if symbol in pos_results and 'current_price' in pos_results[symbol]:
+                price = pos_results[symbol]['current_price']
+                break
+        
+        symbol_prices[symbol] = price
         total_value += shares * price
+    
+    # Create table data with weights
     for symbol, shares in portfolio.items():
-        price = next(
-            (res['position_results'][symbol]['current_price']
-             for res in analysis_results.values()
-             if symbol in res.get('position_results', {})),
-            0
-        )
-        weight = (shares * price) / total_value if total_value else 0
-        data.append([symbol, f"{shares:,}", f"{weight:.2%}"])
-    pdf.create_data_table(headers, data, width=150, col_widths=[50, 50, 50])
-
-    # Table of Contents
+        price = symbol_prices.get(symbol, 0)
+        weight = (shares * price) / total_value if total_value > 0 else 0
+        data.append([symbol, shares, format_percentage(weight)])
+    
+    # Centered table
+    table_width = 150
+    pdf.set_x((pdf.page_width - table_width) / 2)
+    pdf.add_table(headers, data, width=table_width, col_widths=[50, 50, 50])
+    
+    # Table of Contents Page
+    # ----------------------------------------------------------------
     pdf.add_page()
-    pdf.create_section_header("Table of Contents", 1)
+    pdf.chapter_title("Table of Contents")
+    
     toc_items = [
         "1. Executive Summary",
         "2. Market Regime Analysis",
@@ -273,17 +705,26 @@ def generate_enhanced_pdf_report(
         "6. Backtest Results",
         "7. Implementation Plan"
     ]
+    
+    pdf.ln(5)
+    pdf.set_font(pdf.default_font, '', 12)
+    pdf.set_text_color(*COLORS['dark'])
+    
     for item in toc_items:
-        pdf.set_font('Arial', '', 12)
-        pdf.cell(0, 8, item, 0, 1, 'L')
-
+        pdf.cell(0, 10, item, 0, 1, 'L')
+    
     # 1. Executive Summary
+    # ----------------------------------------------------------------
     pdf.add_page()
-    pdf.create_section_header("1. Executive Summary", 1)
+    pdf.chapter_title("1. Executive Summary")
+    
+    # Get risk level
     risk_level = next(iter(analysis_results), 'conservative')
+    
+    # Summary text
     summary_text = (
         f"This report provides a comprehensive analysis of covered call strategies for "
-        f"your portfolio of {num_symbols} stocks. The analysis is conducted at a "
+        f"your portfolio of {len(portfolio)} stocks. The analysis is conducted at a "
         f"{risk_level} risk level, with considerations for current market regimes and "
         f"volatility forecasts.\n\n"
         f"Based on our analysis, we recommend implementing a covered call strategy "
@@ -291,98 +732,373 @@ def generate_enhanced_pdf_report(
         f"generate income while managing risk through careful strike selection and "
         f"expiration timing."
     )
-    pdf.set_font('Arial', '', 10)
-    pdf.multi_cell(0, 5, summary_text)
+    
+    pdf.body_text(summary_text)
     pdf.ln(5)
-
+    
     # Key Portfolio Metrics
-    pdf.create_section_header("Key Portfolio Metrics", 2)
-    metrics_content = ""
+    pdf.section_title("Key Portfolio Metrics")
+    
+    # Extract metrics
+    portfolio_metrics = {}
     for res in analysis_results.values():
-        rm = res.get('portfolio_data', {}).get('risk_metrics')
+        rm = res.get('portfolio_data', {}).get('risk_metrics', {})
         if rm:
-            metrics_content = (
-                f"Total Portfolio Value: ${rm.get('total_value',0):,.2f}\n"
-                f"Portfolio Volatility: {rm.get('portfolio_volatility',0):.2%}\n"
-                f"Value at Risk (99%): ${rm.get('value_at_risk',0):,.2f}\n"
-                f"Expected Shortfall: ${rm.get('expected_shortfall',0):,.2f}\n"
-                f"Diversification Ratio: {rm.get('diversification_ratio',0):.2%}\n"
-            )
+            portfolio_metrics = {
+                'Total Portfolio Value': format_currency(rm.get('total_value', 0)),
+                'Portfolio Volatility': format_percentage(rm.get('portfolio_volatility', 0)),
+                'Value at Risk (99%)': format_currency(rm.get('value_at_risk', 0)),
+                'Expected Shortfall': format_currency(rm.get('expected_shortfall', 0)),
+                'Diversification Ratio': format_percentage(rm.get('diversification_ratio', 0))
+            }
             break
-    if metrics_content:
-        pdf.create_info_box("Portfolio Risk Metrics", metrics_content)
-
+    
+    # Create metrics grid
+    if portfolio_metrics:
+        pdf.add_metric_grid(portfolio_metrics, num_columns=3)
+    
     # 2. Market Regime Analysis
+    # ----------------------------------------------------------------
     pdf.add_page()
-    pdf.create_section_header("2. Market Regime Analysis", 1)
+    pdf.chapter_title("2. Market Regime Analysis")
+    
+    # Get first symbol and its regime data
     first_symbol = next(iter(portfolio))
-    pos = next(
+    pos_data = next(
         (res['position_results'][first_symbol] for res in analysis_results.values()
          if first_symbol in res.get('position_results', {})),
         {}
     )
-    fig = generate_regime_chart(first_symbol, pos.get('market_analyzer'), pos.get('weekly_data'))
-    pdf.insert_chart(fig, f"Market Regime Analysis for {first_symbol}")
-
+    
+    # Extract regime information
+    current_regime = pos_data.get('market_regime', {}).get('current', 3)
+    regime_name = REGIME_NAMES.get(current_regime, "Unknown")
+    
+    # Create mock regime data if not available
+    regime_data = []
+    if 'market_analyzer' in pos_data and hasattr(pos_data['market_analyzer'], 'get_regime_series'):
+        # Use actual regime data
+        regime_series = pos_data['market_analyzer'].get_regime_series()
+        regime_data = [{'date': date.strftime('%Y-%m-%d'), 'regime': regime} 
+                     for date, regime in zip(regime_series.index, regime_series.values)]
+    else:
+        # Create mock data based on current regime
+        dates = pd.date_range(end=datetime.now(), periods=12, freq='M')
+        
+        # Create a plausible regime path leading to current regime
+        regimes = []
+        # Start with a neutral regime
+        start_regime = 3
+        # Gradually transition to current regime
+        steps = len(dates)
+        for i in range(steps):
+            weight = i / (steps - 1)
+            regime = round(start_regime * (1 - weight) + current_regime * weight)
+            regimes.append(regime)
+        
+        regime_data = [{'date': date.strftime('%Y-%m-%d'), 'regime': regime} 
+                     for date, regime in zip(dates, regimes)]
+    
+    # Generate regime chart
+    fig = generate_regime_chart(first_symbol, regime_data, current_regime)
+    pdf.add_chart(fig, f"Market Regime Analysis for {first_symbol}")
+    
+    # Add regime explanation
+    regime_info = {
+        0: "Severe bearish regimes indicate sharp market declines with high volatility. Conservative covered call strategies with shorter expirations and lower deltas are recommended.",
+        1: "Bearish regimes signal downward price trends. Focus on downside protection with OTM calls to allow for some recovery.",
+        2: "Weak bearish regimes show slow downward pressure. Implementing moderately OTM covered calls can generate income while limiting additional losses.",
+        3: "Neutral regimes have limited directional bias. ATM or slightly OTM covered calls offer balanced income and upside potential.",
+        4: "Weak bullish regimes show gradual upward movement. Slightly OTM covered calls with moderate expirations maximize premium while allowing some upside.",
+        5: "Bullish regimes feature strong upward momentum. Consider further OTM strikes to capture more upside potential.",
+        6: "Strong bullish regimes show powerful upward trends. Use far OTM strikes with high deltas or reduced allocation to avoid capping significant gains."
+    }
+    
+    regime_color = REGIME_COLORS.get(current_regime, COLORS['primary'])
+    rgb_color = tuple(int(regime_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+    
+    pdf.info_box(
+        f"Current Regime: {regime_name}",
+        regime_info.get(current_regime, ""),
+        fill_color=rgb_color if current_regime in [0, 1] else None,
+        text_color=COLORS['white'] if current_regime in [0, 1] else None
+    )
+    
     # 3. Volatility Analysis
+    # ----------------------------------------------------------------
     pdf.add_page()
-    pdf.create_section_header("3. Volatility Analysis", 1)
-    pos_data = next(iter(analysis_results.values())).get('position_results', {})
-    fig = generate_vol_comparison_chart(pos_data, portfolio)
-    pdf.insert_chart(fig, "Volatility Model Comparison")
-
-    # 4. Strategy Recommendations
-    pdf.add_page()
-    pdf.create_section_header("4. Strategy Recommendations", 1)
-    strat_text = (
-        f"• Target annual premium yield: {get_target_yield(risk_level):.1%}\n"
-        f"• Target delta range: {get_delta_range(risk_level)}\n"
-        f"• Typical days to expiry: {get_dte_range(risk_level)}\n"
-        f"• Position allocation: Cover up to {get_allocation(market_analysis.get('market_regime',3), risk_level):.0%} of portfolio value\n"
-    )
-    pdf.set_font('Arial', '', 10)
-    pdf.multi_cell(0, 5, strat_text)
-
-    # 5. Position Details
-    pdf.add_page()
-    pdf.create_section_header("5. Position Details", 1)
-    for symbol in portfolio:
-        p = pos_data.get(symbol)
-        if not p: continue
-        price = p.get('current_price',0)
-        pdf.create_section_header(f"{symbol} - ${price:.2f}",2)
-        shares = portfolio[symbol]
-        summary = f"Shares: {shares}\nContracts: {shares//100}\nValue: ${shares*price:,.2f}"
-        pdf.create_info_box(f"{symbol} Summary", summary)
-        for dte, chain in p.get('option_chains',{}).items():
-            if chain:
-                fig = generate_option_chain_analysis(chain, price)
-                pdf.insert_chart(fig, f"{symbol} Option Chain - {dte} DTE")
-                break
-
-    # 6. Backtest Results
-    pdf.add_page()
-    pdf.create_section_header("6. Backtest Results", 1)
-    for symbol, bt in backtests.items():
-        if 'error' in bt: continue
-        pdf.create_section_header(f"{symbol} Backtest",2)
-        metrics = (
-            f"Total return: {bt.get('total_return',0):.2%}\n"
-            f"Ann. return: {bt.get('annualized_return',0):.2%}\n"
-            f"Max drawdown: {bt.get('max_drawdown',0):.2%}"
+    pdf.chapter_title("3. Volatility Analysis")
+    
+    # Extract volatility data
+    volatility_data = {}
+    portfolio_vol = 0
+    
+    for res in analysis_results.values():
+        pos_results = res.get('position_results', {})
+        for symbol, data in pos_results.items():
+            if symbol in portfolio and 'volatility' in data:
+                vol = data['volatility'].get('forecast', 0)
+                volatility_data[symbol] = vol
+        
+        # Get portfolio volatility
+        portfolio_vol = res.get('portfolio_data', {}).get('risk_metrics', {}).get('portfolio_volatility', 0)
+        break
+    
+    # Generate volatility chart
+    fig = generate_volatility_chart(volatility_data, portfolio_vol)
+    pdf.add_chart(fig, "Volatility Comparison Across Portfolio")
+    
+    # Add volatility insights
+    if volatility_data:
+        # Find highest and lowest volatility stocks
+        sorted_vols = sorted(volatility_data.items(), key=lambda x: x[1])
+        lowest_vol_symbol, lowest_vol = sorted_vols[0]
+        highest_vol_symbol, highest_vol = sorted_vols[-1]
+        
+        vol_insights = (
+            f"Volatility Analysis Insights:\n\n"
+            f"  Highest Volatility: {highest_vol_symbol} at {highest_vol:.1%}\n"
+            f"  Lowest Volatility: {lowest_vol_symbol} at {lowest_vol:.1%}\n"
+            f"  Portfolio Volatility: {portfolio_vol:.1%}\n\n"
+            f"Higher volatility stocks like {highest_vol_symbol} offer greater premium income but come with increased "
+            f"assignment risk and potential for larger adverse price movements. Lower volatility stocks like "
+            f"{lowest_vol_symbol} provide more stable, predictable returns but with smaller premium yields."
         )
-        pdf.create_info_box(f"{symbol} Metrics", metrics)
-        fig = generate_backtest_pnl_chart(bt)
-        pdf.insert_chart(fig, f"{symbol} Performance")
-
-    # 7. Implementation Plan
+        
+        pdf.info_box("Volatility Insights", vol_insights)
+    
+    # 4. Strategy Recommendations
+    # ----------------------------------------------------------------
     pdf.add_page()
-    pdf.create_section_header("7. Implementation Plan", 1)
-    timing = market_analysis.get('implementation_plan',{}).get('execution_timing',{})
-    ip_text = (
-        f"Optimal time: {timing.get('optimal_time_of_day','Any')}\n"
-        f"Days to avoid: {timing.get('days_to_avoid','None')}"
-    )
-    pdf.multi_cell(0,5,ip_text)
+    pdf.chapter_title("4. Strategy Recommendations")
+    
+    # Define strategy parameters based on risk level and market regime
+    def get_target_yield(risk_level: str) -> float:
+        """Get target annual premium yield based on risk level."""
+        yields = {
+            'conservative': 0.12,  # 12%
+            'moderate': 0.16,      # 16%
+            'aggressive': 0.20     # 20%
+        }
+        return yields.get(risk_level, 0.12)
 
+    def get_delta_range(risk_level: str) -> str:
+        """Get target delta range based on risk level."""
+        delta_ranges = {
+            'conservative': "0.15 - 0.25",
+            'moderate': "0.25 - 0.35",
+            'aggressive': "0.30 - 0.45"
+        }
+        return delta_ranges.get(risk_level, "0.20 - 0.30")
+
+    def get_dte_range(risk_level: str) -> str:
+        """Get target DTE range based on risk level."""
+        dte_ranges = {
+            'conservative': "30 - 45 days",
+            'moderate': "21 - 45 days",
+            'aggressive': "14 - 30 days"
+        }
+        return dte_ranges.get(risk_level, "30 - 45 days")
+
+    def get_allocation(regime: int, risk_level: str) -> float:
+        """Get portfolio allocation percentage based on regime and risk level."""
+        base_allocation = {
+            'conservative': 0.5,
+            'moderate': 0.7,
+            'aggressive': 0.9
+        }.get(risk_level, 0.6)
+        
+        regime_adjustment = {
+            0: -0.2, 1: -0.1, 2: -0.05,  # Bearish regimes - reduce allocation
+            3: 0.0,                      # Neutral - no adjustment
+            4: 0.05, 5: 0.1, 6: 0.2      # Bullish regimes - increase allocation
+        }.get(regime, 0.0)
+        
+        return max(0.1, min(1.0, base_allocation + regime_adjustment))
+    
+    # Strategy parameters
+    target_yield = get_target_yield(risk_level)
+    delta_range = get_delta_range(risk_level)
+    dte_range = get_dte_range(risk_level)
+    allocation = get_allocation(current_regime, risk_level)
+    
+    # Format parameters
+    strategy_params = (
+        f"  Target annual premium yield: {format_percentage(target_yield)}\n"
+        f"  Target delta range: {delta_range}\n"
+        f"  Typical days to expiry: {dte_range}\n"
+        f"  Position allocation: Cover up to {format_percentage(allocation)} of portfolio value"
+    )
+    
+    pdf.set_font(pdf.default_font, '', 12)
+    pdf.multi_cell(0, 6, strategy_params)
+    pdf.ln(8)
+    
+    # Regime-specific advice
+    regime_advice = {
+        0: "In a severe bearish regime, prioritize capital preservation. Use wider strikes (further OTM) with shorter expiration periods. Consider reducing allocation to 20-25% and setting stop-loss triggers.",
+        1: "In a bearish regime, focus on defensive positioning. Use OTM calls to allow for some recovery while generating income. Monitor positions closely and consider rolling at 21 DTE if still OTM.",
+        2: "In a weak bearish regime, balance income with protection. Moderately OTM covered calls can generate income while limiting additional losses. Consider 30-45 DTE for better time decay.",
+        3: "In a neutral regime, implement a balanced approach. ATM or slightly OTM covered calls offer optimal income and upside potential. The standard parameters work well in this environment.",
+        4: "In a weak bullish regime, allow for more upside. Slightly OTM calls with moderate expirations maximize premium while allowing participation in moderate price increases.",
+        5: "In a bullish regime, use further OTM strikes to capture more upside potential. Consider reducing allocation to allow for more uncovered shares to benefit from the bullish trend.",
+        6: "In a strong bullish regime, use far OTM strikes with higher deltas or consider reducing covered call allocation significantly to avoid capping substantial gains."
+    }
+    
+    pdf.section_title("Regime-Specific Strategy Adjustments")
+    pdf.info_box(
+        f"Strategy for {regime_name} Regime", 
+        regime_advice.get(current_regime, ""), 
+        fill_color=rgb_color if current_regime in [0, 1] else None,
+        text_color=COLORS['white'] if current_regime in [0, 1] else None
+    )
+    
+    # 5. Position Details
+    # ----------------------------------------------------------------
+    for symbol in portfolio:
+        pdf.add_page()
+        
+        # Get position data
+        pos_data = {}
+        for res in analysis_results.values():
+            if symbol in res.get('position_results', {}):
+                pos_data = res['position_results'][symbol]
+                break
+        
+        if not pos_data:
+            continue
+        
+        # Get basic info
+        price = pos_data.get('current_price', 0)
+        shares = portfolio[symbol]
+        contracts = shares // 100
+        position_value = price * shares
+        
+        pdf.chapter_title(f"5. Position Details: {symbol}")
+        
+        # Position summary
+        pdf.section_title(f"{symbol} - ${price:.2f}")
+        
+        summary_text = (
+            f"Shares: {shares:,}\n"
+            f"Contracts: {contracts}\n"
+            f"Value: {format_currency(position_value)}\n"
+        )
+        
+        pdf.info_box(f"{symbol} Summary", summary_text)
+        
+        # Option chain visualization
+        option_chains = pos_data.get('option_chains', {})
+        if option_chains:
+            # Get the first available DTE
+            first_dte = next(iter(option_chains))
+            chain = option_chains[first_dte]
+            
+            # Prepare option data for chart
+            option_data = []
+            for option in chain:
+                if 'strike' in option and 'mid' in option:
+                    option_data.append({
+                        'strike': option['strike'],
+                        'premium': option['mid']
+                    })
+            
+            if option_data:
+                # Generate premium chart
+                fig = generate_premium_chart(option_data, price)
+                pdf.add_chart(fig, f"{symbol} Option Chain - {first_dte} DTE")
+        
+        # Get best strike recommendations
+        optimal_strikes = pos_data.get('optimal_strikes', {})
+        if optimal_strikes:
+            pdf.subsection_title("Recommended Option Strategies")
+            
+            # Create table with option recommendations
+            headers = ['DTE', 'Strike', 'Premium', 'Delta', 'Annual Return', 'Upside']
+            data = []
+            
+            for dte, details in optimal_strikes.items():
+                strike = details.get('strike', 0)
+                premium = details.get('call_price', 0)
+                delta = details.get('delta', 0)
+                annual_return = details.get('annualized_return', 0) / 100  # Convert back to decimal
+                upside = details.get('upside_potential', 0) / 100  # Convert back to decimal
+                
+                data.append([
+                    int(dte),
+                    f"${strike:.2f}",
+                    f"${premium:.2f}",
+                    f"{delta:.2f}",
+                    format_percentage(annual_return),
+                    format_percentage(upside)
+                ])
+            
+            # Sort by DTE
+            data.sort(key=lambda x: x[0])
+            
+            # Add table
+            pdf.add_table(headers, data)
+    
+    # 6. Backtest Results
+    # ----------------------------------------------------------------
+    pdf.add_page()
+    pdf.chapter_title("6. Backtest Results")
+    
+    # Loop through symbols with backtest data
+    for symbol, bt in backtests.items():
+        if 'error' in bt or not bt:
+            continue
+        
+        pdf.section_title(f"{symbol} Backtest")
+        
+        # Format metrics
+        metrics = (
+            f"Total Return: {format_percentage(bt.get('total_return', 0))}\n"
+            f"Annualized Return: {format_percentage(bt.get('annualized_return', 0))}\n"
+            f"Max Drawdown: {format_percentage(bt.get('max_drawdown', 0))}"
+        )
+        
+        pdf.info_box(f"{symbol} Performance Metrics", metrics)
+        
+        # Generate backtest chart
+        fig = generate_backtest_chart(bt)
+        pdf.add_chart(fig, f"{symbol} Backtest Performance")
+    
+    # 7. Implementation Plan
+    # ----------------------------------------------------------------
+    pdf.add_page()
+    pdf.chapter_title("7. Implementation Plan")
+    
+    # Get execution timing
+    timing = market_analysis.get('implementation_plan', {}).get('execution_timing', {})
+    optimal_time = timing.get('optimal_time_of_day', 'Any')
+    days_to_avoid = timing.get('days_to_avoid', 'None')
+    
+    # Implementation details
+    implementation_text = (
+        f"Optimal time: {optimal_time}\n"
+        f"Days to avoid: {days_to_avoid}\n\n"
+        f"Implementation Strategy:\n"
+        f"1. Enter positions gradually, dividing your allocation across 2-3 days\n"
+        f"2. Use limit orders slightly below the mid-price, adjusting every 15 minutes if needed\n"
+        f"3. For higher volume names, you can use more aggressive limit pricing\n"
+        f"4. Consider implied volatility trends - entering when IV is relatively high may be advantageous\n"
+        f"5. Monitor positions weekly and consider management rules when they reach 50-80% of max profit\n"
+    )
+    
+    pdf.body_text(implementation_text)
+    
+    # Add risk management box
+    risk_management = (
+        f"Risk Management Guidelines:\n\n"
+        f"  Set position size limits based on current regime ({regime_name})\n"
+        f"  Use stop-loss triggers at 2x the premium collected\n"
+        f"  Consider rolling or closing positions if underlying moves significantly against you\n"
+        f"  Maintain a cash reserve of at least {format_percentage(max(0.05, (portfolio_vol - 0.15) * 2))} to manage adverse moves\n"
+        f"  Avoid earnings periods or significant news events\n"
+        f"  For severe bearish regimes, reduce position sizes and increase cash holdings"
+    )
+    
+    pdf.info_box("Risk Management Framework", risk_management)
+    
     return pdf
